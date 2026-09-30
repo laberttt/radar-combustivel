@@ -103,6 +103,8 @@ def baixar_dados_anp():
     )
 
     print("\nDados RAW armazenados com sucesso.")
+    
+    return caminho_arquivo
 
 
 # ============================================================
@@ -111,3 +113,5 @@ def baixar_dados_anp():
 
 if __name__ == "__main__":
     baixar_dados_anp()
+    
+    

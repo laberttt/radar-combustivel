@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-PROCESSED_FILE = (
+DEFAULT_PROCESSED_FILE = (
     PROJECT_ROOT
     / "data"
     / "processed"
@@ -29,7 +29,6 @@ ENV_FILE = PROJECT_ROOT / ".env"
 
 load_dotenv(ENV_FILE)
 
-
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 DB_NAME = os.getenv("DB_NAME")
@@ -38,104 +37,133 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 
 # ============================================================
-# VALIDAÇÕES
+# FUNÇÃO DE CARGA
 # ============================================================
 
-if not PROCESSED_FILE.exists():
-    raise FileNotFoundError(
-        "Arquivo processado não encontrado. "
-        "Execute primeiro transform_anp.py."
-    )
+def carregar_postgres(arquivo_processado=None):
+
+    print("\n" + "=" * 60)
+    print("RADAR COMBUSTÍVEL - CARGA POSTGRESQL")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Definir arquivo processado
+    # --------------------------------------------------------
+
+    if arquivo_processado is None:
+        arquivo_processado = DEFAULT_PROCESSED_FILE
+
+    arquivo_processado = Path(arquivo_processado)
 
 
-variaveis_obrigatorias = {
-    "DB_HOST": DB_HOST,
-    "DB_PORT": DB_PORT,
-    "DB_NAME": DB_NAME,
-    "DB_USER": DB_USER,
-    "DB_PASSWORD": DB_PASSWORD,
-}
+    # --------------------------------------------------------
+    # Validar arquivo
+    # --------------------------------------------------------
 
-
-faltando = [
-    nome
-    for nome, valor in variaveis_obrigatorias.items()
-    if not valor
-]
-
-
-if faltando:
-    raise ValueError(
-        "Variáveis ausentes no .env: "
-        + ", ".join(faltando)
-    )
-
-
-# ============================================================
-# CARREGAR CSV
-# ============================================================
-
-print("=" * 60)
-print("RADAR COMBUSTÍVEL - CARGA POSTGRESQL")
-print("=" * 60)
-
-
-df = pd.read_csv(
-    PROCESSED_FILE,
-    parse_dates=["data_coleta"]
-)
-
-
-print(f"\nRegistros encontrados no CSV: {len(df):,}")
-
-
-# ============================================================
-# CONECTAR AO POSTGRESQL
-# ============================================================
-
-print("\nConectando ao PostgreSQL...")
-
-
-with psycopg.connect(
-    host=DB_HOST,
-    port=DB_PORT,
-    dbname=DB_NAME,
-    user=DB_USER,
-    password=DB_PASSWORD,
-) as conn:
-
-    with conn.cursor() as cursor:
-
-        print("Conexão realizada com sucesso!")
-
-        # ====================================================
-        # VERIFICAR SE A TABELA JÁ POSSUI DADOS
-        # ====================================================
-
-        cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM precos_combustiveis;
-            """
+    if not arquivo_processado.exists():
+        raise FileNotFoundError(
+            "Arquivo processado não encontrado. "
+            "Execute primeiro a transformação."
         )
 
-        registros_existentes = cursor.fetchone()[0]
 
-        if registros_existentes > 0:
+    # --------------------------------------------------------
+    # Validar variáveis do .env
+    # --------------------------------------------------------
+
+    variaveis_obrigatorias = {
+        "DB_HOST": DB_HOST,
+        "DB_PORT": DB_PORT,
+        "DB_NAME": DB_NAME,
+        "DB_USER": DB_USER,
+        "DB_PASSWORD": DB_PASSWORD,
+    }
+
+    faltando = [
+        nome
+        for nome, valor in variaveis_obrigatorias.items()
+        if not valor
+    ]
+
+    if faltando:
+        raise ValueError(
+            "Variáveis ausentes no .env: "
+            + ", ".join(faltando)
+        )
+
+
+    # --------------------------------------------------------
+    # Carregar CSV processado
+    # --------------------------------------------------------
+
+    print(
+        f"\nArquivo utilizado: "
+        f"{arquivo_processado.name}"
+    )
+
+    df = pd.read_csv(
+        arquivo_processado,
+
+        parse_dates=[
+            "data_coleta"
+        ],
+
+        dtype={
+            "regiao": "string",
+            "uf": "string",
+            "municipio": "string",
+            "revenda": "string",
+            "cnpj": "string",
+            "rua": "string",
+            "numero": "string",
+            "bairro": "string",
+            "cep": "string",
+            "produto": "string",
+            "unidade_medida": "string",
+            "bandeira": "string",
+        }
+    )
+
+    print(
+        f"Registros encontrados no CSV: "
+        f"{len(df):,}"
+    )
+
+
+    # --------------------------------------------------------
+    # Conectar ao PostgreSQL
+    # --------------------------------------------------------
+
+    print("\nConectando ao PostgreSQL...")
+
+    with psycopg.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+    ) as conn:
+
+        with conn.cursor() as cursor:
+
+            print("Conexão realizada com sucesso!")
+
+
+            # =================================================
+            # FULL REFRESH
+            # =================================================
+
             print(
-                "\nCarga cancelada."
+                "\nLimpando dados anteriores da tabela..."
             )
 
-            print(
-                "A tabela precos_combustiveis já possui "
-                f"{registros_existentes:,} registros."
+            cursor.execute(
+                """
+                TRUNCATE TABLE precos_combustiveis
+                RESTART IDENTITY;
+                """
             )
 
-            print(
-                "Isso evita inserir os mesmos dados novamente."
-            )
-
-        else:
 
             # =================================================
             # PREPARAR REGISTROS
@@ -152,15 +180,34 @@ with psycopg.connect(
                         linha.municipio,
                         linha.revenda,
                         linha.cnpj,
-                        linha.rua,
-                        linha.numero,
-                        linha.bairro,
-                        linha.cep,
+
+                        None
+                        if pd.isna(linha.rua)
+                        else linha.rua,
+
+                        None
+                        if pd.isna(linha.numero)
+                        else linha.numero,
+
+                        None
+                        if pd.isna(linha.bairro)
+                        else linha.bairro,
+
+                        None
+                        if pd.isna(linha.cep)
+                        else linha.cep,
+
                         linha.produto,
+
                         linha.data_coleta.date(),
+
                         linha.valor_venda,
+
                         linha.unidade_medida,
-                        linha.bandeira,
+
+                        None
+                        if pd.isna(linha.bandeira)
+                        else linha.bandeira,
                     )
                 )
 
@@ -170,7 +217,6 @@ with psycopg.connect(
             # =================================================
 
             print("\nInserindo dados no PostgreSQL...")
-
 
             comando_insert = """
                 INSERT INTO precos_combustiveis (
@@ -195,7 +241,6 @@ with psycopg.connect(
                 );
             """
 
-
             cursor.executemany(
                 comando_insert,
                 registros
@@ -203,7 +248,7 @@ with psycopg.connect(
 
 
             # =================================================
-            # CONFIRMAR CARGA
+            # VALIDAR CARGA
             # =================================================
 
             cursor.execute(
@@ -216,12 +261,24 @@ with psycopg.connect(
             total_banco = cursor.fetchone()[0]
 
 
-            print("\nCarga concluída!")
+    print("\nCarga concluída!")
 
-            print(
-                f"Registros inseridos: {len(registros):,}"
-            )
+    print(
+        f"Registros inseridos: "
+        f"{len(registros):,}"
+    )
 
-            print(
-                f"Registros no banco: {total_banco:,}"
-            )
+    print(
+        f"Registros no banco: "
+        f"{total_banco:,}"
+    )
+
+    return total_banco
+
+
+# ============================================================
+# EXECUÇÃO DIRETA
+# ============================================================
+
+if __name__ == "__main__":
+    carregar_postgres()
